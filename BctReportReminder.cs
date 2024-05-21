@@ -38,7 +38,7 @@ public class BctReport(ILogger<Notify> log, BctDbContext context, string timeZon
             var wts = reminder.WhenToSend;
             var months = reminder.Months;
             var freq = rptTemplateSettingsData.ReportingFrequency;
-            var 
+            
         }
 
 
@@ -71,7 +71,7 @@ public class BctReport(ILogger<Notify> log, BctDbContext context, string timeZon
         // Create the EMAIL message settings object.
         MailMessageSettings mailMessageSettings = new()
         {
--- PICK UP HERE IN THE MORNING. BY FIGURING OUT WHAT DATA TO PULL.
+// PICK UP HERE IN THE MORNING. BY FIGURING OUT WHAT DATA TO PULL.
 
             To = "Chris.tate@b2Gnow.com",
             From = adminClientSettings.SupportEmail,
