@@ -1,5 +1,7 @@
-﻿using System.Net.Mail;
+﻿using System.ComponentModel.DataAnnotations;
+using System.Net.Mail;
 using DataAccess;
+using DataAccess.BctModels;
 using Microsoft.Extensions.Logging;
 using NotificationService;
 using Smtp;
@@ -17,10 +19,38 @@ public class BctReport(ILogger<Notify> log, BctDbContext context, string timeZon
     private readonly Notify _notify = new (log);
     private readonly DateTime _estDateTime = TimeZoneInfo.ConvertTime(DateTime.UtcNow, TimeZoneInfo.FindSystemTimeZoneById(timeZone));
 
-    public void SendReminderEmail(int clientId, string name, int rptTemplateId)
+    public void SendReminderEmail(int rptTemplateId)
     {
-        //TODO: Goto database to get the SMTP and Email settings.
-        var emailSettings = context.EmailSettings.FirstOrDefault(es => es.TenantCode == "TX");
+        //Get the report reminders.
+        var rptReminderData = context.ReportReminders.Where(rt => rt.ReportId == rptTemplateId && rt.Active == true);
+        if (rptReminderData == null)
+            throw new Exception("Report Template not found.");
+
+        //Get the report template settings.
+        var rptTemplateSettingsData = context.ReportingProfileTemplates.FirstOrDefault(rts => rts.Id == rptTemplateId && rts.Active == true);
+        if (rptTemplateSettingsData == null)
+            throw new Exception("Report Template Settings not found.");
+
+        //Start processing the report reminders.
+        foreach (ReportReminder reminder in rptReminderData)
+        {
+            var nod = reminder.NumberOfDays;
+            var wts = reminder.WhenToSend;
+            var months = reminder.Months;
+            var freq = rptTemplateSettingsData.ReportingFrequency;
+            var 
+        }
+
+
+
+        //Get the client settings.
+        var clientSettingsData = context.AdminClients.FirstOrDefault(ac => ac.Id == rptTemplateSettingsData.Client_Id && ac.Active == true);
+        if (clientSettingsData == null)
+            throw new Exception("Client Settings not found.");
+
+
+        //Get the email settings.
+        var emailSettings = context.EmailSettings.FirstOrDefault(es => es.TenantCode == clientSettingsData.Code && es.Active == true);
         if (emailSettings == null) 
             throw new Exception("Email settings not found.");
 
@@ -57,7 +87,7 @@ public class BctReport(ILogger<Notify> log, BctDbContext context, string timeZon
         if (!emailResult.Item1)
         {
             // Log the email was NOT sent
-            _notify.ProcessingCompletion($"FAILED {clientId}:{name}:{emailResult.Item2}:{_estDateTime:MM/dd/yyyy hh:mm:ss tt}");
+            _notify.ProcessingCompletion($"FAILED clientId:name:{emailResult.Item2}:{_estDateTime:MM/dd/yyyy hh:mm:ss tt}");
         }
 
         // Do success sent email logic.
