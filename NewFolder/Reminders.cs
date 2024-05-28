@@ -5,6 +5,6 @@ using NotificationService;
 
 namespace BCT_Scheduler.NewFolder;
 
-public class RemindersImpl(ILogger<Notify> log, string timeZone = "Eastern Standard Time") : BctReport(log, new BctDbContext(new DbContextOptions<BctDbContext>()), timeZone)
+public class RemindersImpl(ILogger<BctReport> log, string timeZone = "Eastern Standard Time") : BctReport(log,  timeZone)
 {
 }
