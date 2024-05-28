@@ -6,6 +6,8 @@ using NotificationService;
 using Smtp;
 using Smtp.Models;
 
+#pragma warning disable CA2254
+
 namespace BCT_Scheduler;
 
 /// <summary>
@@ -20,11 +22,10 @@ public class BctReport(ILogger<BctReport> log, string timeZone = "Eastern Standa
     private readonly EmailService _emailService = new ();
     private readonly Notify _notify = new(new LoggerFactory().CreateLogger<Notify>());
     private readonly DateTime _estDateTime = TimeZoneInfo.ConvertTime(DateTime.UtcNow, TimeZoneInfo.FindSystemTimeZoneById(timeZone));
-//    
     private readonly BctDbContext _context = new (new DbContextOptions<BctDbContext>());
 
     /// <summary>
-    /// 
+    /// Sends the report template reminder email.
     /// </summary>
     /// <param name="reminderId">Which reminder to send</param>
     /// <param name="month">The month to send the email.</param>
@@ -68,17 +69,20 @@ public class BctReport(ILogger<BctReport> log, string timeZone = "Eastern Standa
                 .Where(es => es.ClientCode == clientSettingsData.Code)
                 .Select(es => new { es.SupportEmail })
                 .FirstOrDefault() ?? throw new Exception($"ClientSettings settings not found for {clientSettingsData.Code}.");
-
+            //Get the email template.
             var emailTemplate = _context.EmailTemplates
                 .Where(et => et.Id == rptReminderData.EmailTemplateId && et.Active == true)
                 .Select(et => new { et.Template, et.Subject })
                 .FirstOrDefault() ?? throw new Exception($"Email Template Settings were not found. {rptReminderData.EmailTemplateId}");
 
+            // Replace the email template & Subject [data] with the actual data.
             var emailBody = emailTemplate.Template;//TODO: Replace the email template [data] with the actual data.
             var emailSubject = emailTemplate.Subject;//TODO: Replace the email subject [data] with the actual data.
 
-var recipients = Recipients(rptTemplateSettingsData.Client_Id, clientSettingsData.Code!);
-string recipientsString = string.Join(",", recipients);
+            // Get the recipients.
+            var recipients = Recipients(rptTemplateSettingsData.Client_Id, clientSettingsData.Code!);
+var recipientsString = string.Join(",", recipients);
+
             // Create the EMAIL message settings object.
             MailMessageSettings mailMessageSettings = new()
         {
@@ -133,7 +137,7 @@ _notify.ProcessingCompletion($"SUCCESS client:{clientSettingsData.Code} / remind
 
             // Step 4: Get the emails of users with IDs from the previous step
              List<string> userEmails = _context.SecurityUsers
-                 .Where(u => userIdsInRole.Contains(u.Id))
+                 .Where(u => userIdsInRole.Contains(u.Id!))
                  .Select(u => u.Email)
                  .ToList()!;
 
@@ -141,7 +145,7 @@ _notify.ProcessingCompletion($"SUCCESS client:{clientSettingsData.Code} / remind
         }
         catch (Exception e)
         {
-            _notify.ProcessingCompletion($"Failed to get Recipients: {e.Message}");
+            log.LogError(e, e.Message);
             return [];
         }
     }
