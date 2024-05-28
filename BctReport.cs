@@ -51,7 +51,7 @@ public class BctReport(ILogger<BctReport> log, string timeZone = "Eastern Standa
             //Get the email settings.
             var emailSettings = _context.EmailSettings
                 .Where(es => es.TenantCode == clientSettingsData.Code && es.Active == true)
-                .Select(es => new { es.SmtpServer, es.Port, es.Sender, es.Password })
+                .Select(es => new { es.SmtpServer, es.Port, es.Sender, es.Password, es.IsLive, es.TestAddress })
                 .FirstOrDefault() ?? throw new Exception($"Email settings not found for {clientSettingsData.Code}.");
 
             // Create SMTP server settings object.
@@ -77,10 +77,12 @@ public class BctReport(ILogger<BctReport> log, string timeZone = "Eastern Standa
             var emailBody = emailTemplate.Template;//TODO: Replace the email template [data] with the actual data.
             var emailSubject = emailTemplate.Subject;//TODO: Replace the email subject [data] with the actual data.
 
+var recipients = Recipients(rptTemplateSettingsData.Client_Id, clientSettingsData.Code!);
+string recipientsString = string.Join(",", recipients);
             // Create the EMAIL message settings object.
             MailMessageSettings mailMessageSettings = new()
         {
-            To = "Chris.tate@b2Gnow.com", //TODO: Replace with the actual recipient email address.
+            To = emailSettings.IsLive ? recipientsString : $"{emailSettings.TestAddress!}, chris.tate@b2Gnow.com",
                 From = clientSettings.SupportEmail,
             Sender = emailSettings.Sender!,
             Subject = emailSubject!,
@@ -107,36 +109,40 @@ _notify.ProcessingCompletion($"SUCCESS client:{clientSettingsData.Code} / remind
         }
     }
 
-    private void SendEmail(int reminderId, string month)
+    private List<string> Recipients(int clientId, string tenantCode)
     {
-    // Create SMTP server settings object.
-                SmtpServerSettings smtpServerSettings = new()
-            {
-                SmtpServer = "mail.smtp2go.com",
-                Port = 587,
-                SenderEmail = "system@blackcattransit.com",
-                SenderPassword = "n0GSqaXCdEFdNQDV"
-                };
-        // Create a MailMessage object
-        MailMessageSettings mailMessageSettings = new()
+        try
         {
-            To = "chris.tate@b2gnow.com",
-            From = "system@blackcattransit.com",
-            Subject = "Test Email Sent from Hangfire Scheduler",
-            Body = $"This is a test email.</br> ReminderId({reminderId}) </br> Month:({month}) </br> Date:{_estDateTime:MM/dd/yyyy hh:mm:ss tt}",
-            IsBodyHtml = true,
-            Priority = MailPriority.Normal,
-            Sender = "system@blackcattransit.com"
-        };
+            // Step 1: Get the user IDs matching the conditions from the Security_User table
+            var userIds = _context.SecurityUsers
+                .Where(u => u.TenantCode == tenantCode && u.Client_Id == clientId && u.Active)
+                .Select(u => u.Id)
+                .ToList();
 
-        var emailResult = _emailService.SendEmail(mailMessageSettings, smtpServerSettings);
-if (!emailResult.Item1)
-{
-    // Log the email was NOT sent
-    _notify.ProcessingCompletion($"FAILED clientId:name:{emailResult.Item2}:{_estDateTime:MM/dd/yyyy hh:mm:ss tt}");
-    return;
-}
+            // Step 2: Get the role ID for the role with DisplayText 'Submit Reporting'
+            var roleId = _context.SecurityRoles
+                .Where(r => r.DisplayText == "Submit Reporting")
+                .Select(r => r.Id)
+                .FirstOrDefault();
 
-_notify.ProcessingCompletion($"SUCCESS clientId:name:{emailResult.Item2}:{_estDateTime:MM/dd/yyyy hh:mm:ss tt}");
+            // Step 3: Get the user IDs associated with the role ID from the Security_UserRole table
+            var userIdsInRole = _context.SecurityUserRoles
+                .Where(ur => userIds.Contains(ur.UserId) && ur.RoleId == roleId)
+                .Select(ur => ur.UserId)
+                .ToList();
+
+            // Step 4: Get the emails of users with IDs from the previous step
+             List<string> userEmails = _context.SecurityUsers
+                 .Where(u => userIdsInRole.Contains(u.Id))
+                 .Select(u => u.Email)
+                 .ToList()!;
+
+        return userEmails;
+        }
+        catch (Exception e)
+        {
+            _notify.ProcessingCompletion($"Failed to get Recipients: {e.Message}");
+            return [];
+        }
     }
 }
