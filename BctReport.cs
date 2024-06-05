@@ -1,5 +1,6 @@
 ﻿using System.Net.Mail;
 using DataAccess;
+using DataAccess.BctModels;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NotificationService;
@@ -20,7 +21,7 @@ namespace BCT_Scheduler;
 public class BctReport(ILogger<BctReport> log, string timeZone = "Eastern Standard Time")
 {
     private readonly EmailService _emailService = new ();
-    private readonly Notify _notify = new(new LoggerFactory().CreateLogger<Notify>());
+    private readonly Notify _notify = new();
     private readonly DateTime _estDateTime = TimeZoneInfo.ConvertTime(DateTime.UtcNow, TimeZoneInfo.FindSystemTimeZoneById(timeZone));
     private readonly BctDbContext _context = new (new DbContextOptions<BctDbContext>());
 
@@ -40,8 +41,12 @@ public class BctReport(ILogger<BctReport> log, string timeZone = "Eastern Standa
             //Get the report template settings.
             var rptTemplateSettingsData = _context.ReportingProfileTemplates
                 .Where(rts => rts.Id == rptReminderData.ReportTemplateId && rts.Active)
-                .Select(rts => new { rts.DisplayName, rts.Client_Id })
+                .Select(rts => new { rts.DisplayName, rts.Client_Id, rts.Id, rts.Status })
                 .FirstOrDefault() ?? throw new Exception($"Report Template Settings were not found. {rptReminderData.ReportTemplateId}");
+
+            //Only send the email if the report template is published.
+            var strEnv = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") == "Development" ? "In Development" : "Published"; //"In Development
+            if (rptTemplateSettingsData.Status != strEnv) return;
 
             //Get the client settings.
             var clientSettingsData = _context.Clients
@@ -52,15 +57,16 @@ public class BctReport(ILogger<BctReport> log, string timeZone = "Eastern Standa
             //Get the email settings.
             var emailSettings = _context.EmailSettings
                 .Where(es => es.TenantCode == clientSettingsData.Code && es.Active == true)
-                .Select(es => new { es.SmtpServer, es.Port, es.Sender, es.Password, es.IsLive, es.TestAddress })
+                .Select(es => new { es.SmtpServer, es.Port, es.Sender, es.Password, es.IsLive, es.TestAddress, es.UserName })
                 .FirstOrDefault() ?? throw new Exception($"Email settings not found for {clientSettingsData.Code}.");
 
             // Create SMTP server settings object.
-                SmtpServerSettings smtpServerSettings = new()
+            SmtpServerSettings smtpServerSettings = new()
             {
+                UserName = emailSettings.UserName!,
                 SmtpServer = emailSettings.SmtpServer!,
                 Port = emailSettings.Port,
-                SenderEmail = emailSettings.Sender!,
+                SenderEmail = string.IsNullOrEmpty(emailSettings.Sender) ? "system@blackcattransit.com" : emailSettings.Sender,
                 SenderPassword = emailSettings.Password!
             };
 
@@ -69,43 +75,60 @@ public class BctReport(ILogger<BctReport> log, string timeZone = "Eastern Standa
                 .Where(es => es.ClientCode == clientSettingsData.Code)
                 .Select(es => new { es.SupportEmail })
                 .FirstOrDefault() ?? throw new Exception($"ClientSettings settings not found for {clientSettingsData.Code}.");
+
             //Get the email template.
+            var notificationTypeId = _context.EmailNotificationTypes
+                .Where(ent => ent.NotificationType == rptReminderData.EmailNotificationType && ent.ClientCode == clientSettingsData.Code)
+                .Select(ent => new { ent.Id })
+                .FirstOrDefault() ?? throw new Exception($"Email Template Settings were not found. {rptReminderData.EmailTemplateId}");
+
             var emailTemplate = _context.EmailTemplates
-                .Where(et => et.Id == rptReminderData.EmailTemplateId && et.Active == true)
+                .Where(et => Equals(et.EmailType_Id, notificationTypeId.Id))
                 .Select(et => new { et.Template, et.Subject })
                 .FirstOrDefault() ?? throw new Exception($"Email Template Settings were not found. {rptReminderData.EmailTemplateId}");
 
             // Replace the email template & Subject [data] with the actual data.
-            var emailBody = emailTemplate.Template;//TODO: Replace the email template [data] with the actual data.
-            var emailSubject = emailTemplate.Subject;//TODO: Replace the email subject [data] with the actual data.
+            var emailBody = emailTemplate.Template!
+                .Replace("[StatusReportDisplayName]", rptTemplateSettingsData.DisplayName)
+                .Replace("[numberofdays]", rptReminderData.NumberOfDays.ToString());
+            var emailSubject = emailTemplate.Subject!
+                .Replace("[Reporting_Display_Name]", rptTemplateSettingsData.DisplayName);
 
             // Get the recipients.
-            var recipients = Recipients(rptTemplateSettingsData.Client_Id, clientSettingsData.Code!);
-var recipientsString = string.Join(",", recipients);
+            var recipients = Recipients(rptTemplateSettingsData.Id);
+            var recipientsString = string.Join(",", recipients);
 
             // Create the EMAIL message settings object.
             MailMessageSettings mailMessageSettings = new()
-        {
-            To = emailSettings.IsLive ? recipientsString : $"{emailSettings.TestAddress!}, chris.tate@b2Gnow.com",
+            {
+                To = emailSettings.IsLive ? recipientsString : $"{emailSettings.TestAddress!}, chris.tate@b2Gnow.com",
                 From = clientSettings.SupportEmail,
-            Sender = emailSettings.Sender!,
-            Subject = emailSubject!,
-            Body = emailBody!,
-            IsBodyHtml = true,
-            Priority = rptReminderData.WhenToSend == "2" ? MailPriority.High : MailPriority.Normal
+                Sender = smtpServerSettings.SenderEmail,
+                Subject = emailSubject,
+                Body = emailBody,
+                IsBodyHtml = true,
+                Priority = rptReminderData.WhenToSend.Equals("2") ? MailPriority.High : MailPriority.Normal
             };
 
             // Attempt to send the email.
-             var emailResult =  _emailService.SendEmail(mailMessageSettings, smtpServerSettings);
+            var emailResult =  _emailService.SendEmail(mailMessageSettings, smtpServerSettings);
             if (!emailResult.Item1)
             {
                 // Log the email was NOT sent
                 _notify.ProcessingCompletion($"FAILED client:{clientSettingsData.Code} / reminder:{rptTemplateSettingsData.DisplayName}({beforeAfter}-{month}) / result:{emailResult.Item2}:{_estDateTime:MM/dd/yyyy hh:mm:ss tt}");
             }
 
-            // Log the email was sent
-_notify.ProcessingCompletion($"SUCCESS client:{clientSettingsData.Code} / reminder:{rptTemplateSettingsData.DisplayName}({beforeAfter}-{month}) / result:{emailResult.Item2}:{_estDateTime:MM/dd/yyyy hh:mm:ss tt}");
+            //save email to email_settings table
+var sentSaved = UpdateEmailSetting(mailMessageSettings, clientSettingsData.Code!, emailResult.Item1);
+if (!sentSaved.Item1)
+{
+    // Log the email was NOT sent
+    _notify.ProcessingCompletion($"FAILED to save sent email client:{clientSettingsData.Code} / reminder:{rptTemplateSettingsData.DisplayName}({beforeAfter}-{month}) / result:{emailResult.Item2}:{_estDateTime:MM/dd/yyyy hh:mm:ss tt}");
+    return;
+            }
 
+            // Log the email was sent
+            _notify.ProcessingCompletion($"SUCCESS client:{clientSettingsData.Code} / reminder:{rptTemplateSettingsData.DisplayName}({beforeAfter}-{month}) / result:{sentSaved.Item2}:{_estDateTime:MM/dd/yyyy hh:mm:ss tt}");
         }
         catch (Exception e)
         {
@@ -113,40 +136,71 @@ _notify.ProcessingCompletion($"SUCCESS client:{clientSettingsData.Code} / remind
         }
     }
 
-    private List<string> Recipients(int clientId, string tenantCode)
+    private (bool, string) UpdateEmailSetting(MailMessageSettings mailMessageSettings, string tenantCode, bool sent)
+    {
+        using var transaction = _context.Database.BeginTransaction();
+        try
+        {
+            SystemEmail email = new()
+            {
+                Recepient = mailMessageSettings.To,
+                Subject = mailMessageSettings.Subject,
+                Body = mailMessageSettings.Body,
+                Sent = sent,
+                TenantCode = tenantCode,
+                Active = true,
+                CreatedDate = DateTime.Now,
+                EmailAttachments = []
+            };
+            // Disable the trigger
+            _context.Database.ExecuteSqlRaw("DISABLE TRIGGER [dbo].[Email_SystemEmails_Insert] ON [dbo].[Email_SystemEmails]");
+
+            // insert of new row
+            _context.SystemEmails.Add(email);
+            _context.SaveChanges();
+
+            transaction.Commit();
+            // Re-enable the trigger
+            _context.Database.ExecuteSqlRaw("ENABLE TRIGGER [dbo].[Email_SystemEmails_Insert] ON [dbo].[Email_SystemEmails]");
+
+
+            return (true, "Save successful");
+        }
+        catch (Exception ex)
+        {
+            // Rollback transaction on error
+            transaction.Rollback();
+            // Re-enable the trigger
+            _context.Database.ExecuteSqlRaw("ENABLE TRIGGER [dbo].[Email_SystemEmails_Insert] ON [dbo].[Email_SystemEmails]");
+            // Log the exception or handle it as needed
+            return (false, "Error saving sent email: " + ex.Message);
+        }
+    }
+
+    private List<string> Recipients(int rptId)
     {
         try
         {
-            // Step 1: Get the user IDs matching the conditions from the Security_User table
-            var userIds = _context.SecurityUsers
-                .Where(u => u.TenantCode == tenantCode && u.Client_Id == clientId && u.Active)
-                .Select(u => u.Id)
+            var userEmails = _context.Contact
+                .FromSql(@$"SELECT PrimaryEmail FROM Contact_Contact 
+                                WHERE AppUser_Id IN (SELECT [UserId]FROM Security_UserRole
+                                                        WHERE UserId IN (SELECT id FROM Security_User 
+                                                                            WHERE active = 1 
+                                                                            AND UserId IN (SELECT AppUser_Id FROM Contact_Contact 
+                                                                                            WHERE AppUser_Id IS NOT NULL 
+                                                                                            AND id IN (SELECT Contact_id FROM Contact_OrganizationAssociation 
+                                                                                                        WHERE Id IN (SELECT Organization_Id FROM ReportingProfileTemplateOrganizations 
+                                                                                                                        WHERE ReportingProfileTemplate_Id = {rptId} AND active = 1)))) 
+                                                                            AND RoleId = (SELECT Id FROM Security_Role WHERE DisplayText = 'Submit Reporting'))")
+                .Select(c => c.PrimaryEmail)
                 .ToList();
 
-            // Step 2: Get the role ID for the role with DisplayText 'Submit Reporting'
-            var roleId = _context.SecurityRoles
-                .Where(r => r.DisplayText == "Submit Reporting")
-                .Select(r => r.Id)
-                .FirstOrDefault();
-
-            // Step 3: Get the user IDs associated with the role ID from the Security_UserRole table
-            var userIdsInRole = _context.SecurityUserRoles
-                .Where(ur => userIds.Contains(ur.UserId) && ur.RoleId == roleId)
-                .Select(ur => ur.UserId)
-                .ToList();
-
-            // Step 4: Get the emails of users with IDs from the previous step
-             List<string> userEmails = _context.SecurityUsers
-                 .Where(u => userIdsInRole.Contains(u.Id!))
-                 .Select(u => u.Email)
-                 .ToList()!;
-
-        return userEmails;
+            return userEmails;
         }
         catch (Exception e)
         {
             log.LogError(e, e.Message);
             return [];
         }
-    }
+    }       
 }
