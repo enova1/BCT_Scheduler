@@ -5,6 +5,8 @@ using Microsoft.Extensions.Logging;
 using NotificationService;
 using DataAccess.BctModels;
 
+#pragma warning disable CA2254
+
 namespace BCT_Scheduler;
 
 
